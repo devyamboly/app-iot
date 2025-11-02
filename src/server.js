@@ -6,6 +6,7 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const TIME = 5 
 
 // Middlewares
 app.use(cors());
@@ -17,12 +18,39 @@ const posturasRoutes = require('./routes/posturas.route');
 
 app.use('/api/posturas', posturasRoutes);
 
+// Control de inserción a la base de datos (máximo cada 5 segundos)
+let ultimaInsercion = 0;
+const INTERVALO_INSERCION = 5000; // 5 segundos en milisegundos
+let datoPendiente = null;
+
 const MQTT_BROKER = 'mqtt://82.197.65.136:1883';
 const MQTT_TOPIC_ESTADO = 'sensor/estado';
 const MQTT_TOPIC_DATOS = 'sensor/datos';
 
 console.log('Conectando al broker MQTT...');
 const mqttClient = mqtt.connect(MQTT_BROKER);
+
+// Inicializar base de datos
+Postura.createTable();
+
+// Intervalo para insertar datos pendientes cada 5 segundos
+setInterval(async () => {
+    if (datoPendiente !== null) {
+        const tiempoActual = new Date().getTime();
+        const tiempoTranscurrido = tiempoActual - ultimaInsercion;
+        
+        if (tiempoTranscurrido >= INTERVALO_INSERCION) {
+            try {
+                const posturaGuardada = await Postura.insert(datoPendiente);
+                console.log('Postura guardada en BD (intervalo):', posturaGuardada.id);
+                ultimaInsercion = tiempoActual;
+                datoPendiente = null; // Limpiar el dato pendiente
+            } catch (error) {
+                console.error('Error guardando en BD (intervalo):', error);
+            }
+        }
+    }
+}, INTERVALO_INSERCION);
 
 mqttClient.on('connect', () => {
     console.log('Conectado al broker MQTT');
@@ -45,25 +73,20 @@ mqttClient.on('message', async (topic, message) => {
     try {
         if (topic === MQTT_TOPIC_ESTADO) {
             const estado = message.toString();
-            console.log(`Estado recibido: ${estado}`);
+            // console.log(`Estado recibido: ${estado}`);
+
+            const data = JSON.parse(message.toString());
+
+            if (data.id_sesion && data.angulo_toracico !== undefined) {
+                // Acumular el último dato recibido (se insertará máximo cada 5 segundos)
+                datoPendiente = data;
+                // El intervalo se encargará de insertar este dato cuando corresponda
+            } else {
+                console.warn('Datos incompletos recibidos:', data);
+            }
 
         } else if (topic === MQTT_TOPIC_DATOS) {
-            // Manejar datos JSON completos
-            const datos = JSON.parse(message.toString());
-            console.log('Datos JSON recibidos:', datos);
-
-            // Validar datos requeridos
-            if (datos.id_sesion && datos.angulo_toracico !== undefined) {
-                try {
-                    // Insertar en PostgreSQL
-                    const posturaGuardada = await Postura.insert(datos);
-                    console.log('Postura guardada en BD:', posturaGuardada.id);
-                } catch (error) {
-                    console.error('Error guardando en BD:', error);
-                }
-            } else {
-                console.warn('Datos incompletos recibidos:', datos);
-            }
+            console.log("Datos recibidios de topic de datod")
         }
     } catch (error) {
         console.error('Error procesando mensaje MQTT:', error);
